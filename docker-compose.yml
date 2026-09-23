@@ -1,0 +1,31 @@
+services:
+  sidecar:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      BEDBOARD_USE_MOCK_FABT: "true"
+      BEDBOARD_DATABASE_URL: "postgresql+asyncpg://bedboard:bedboard@db:5432/bedboard"
+      BEDBOARD_NUDGE_TIMEZONE: "America/Los_Angeles"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bedboard
+      POSTGRES_PASSWORD: bedboard
+      POSTGRES_DB: bedboard
+    ports:
+      - "5432:5432"
+    volumes:
+      - bedboard-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bedboard"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  bedboard-db-data:
