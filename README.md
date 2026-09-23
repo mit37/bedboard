@@ -6,9 +6,12 @@ platform and adds the county-pilot pieces FABT doesn't already have —
 SMS bed updates, stale-count nudges, the Here4You wallboard, and
 Spanish/Vietnamese translations.
 
-**This build is the sidecar only**, stubbed against an in-memory mock of
-the FABT API so the whole thing runs standalone without the real
-Java/Spring FABT deployment. See "Known gaps" below for exactly what's
+**This build is the sidecar only.** It runs standalone against an
+in-memory mock of the FABT API by default (`BEDBOARD_USE_MOCK_FABT=true`),
+but `HttpFabtClient` (the real-FABT path) has been reconciled against and
+live-tested against an actual running instance of the forked
+[finding-a-bed-tonight](https://github.com/mit37/finding-a-bed-tonight)
+backend — see "FABT integration" below. See "Known gaps" for what's still
 mocked and what a real pilot still needs.
 
 ## What's implemented (PRD requirement IDs)
@@ -32,7 +35,7 @@ live in FABT (Java/Spring), which this build doesn't fork — see the PRD's
 Twilio SMS <--> app/sms/webhook.py --+
                                       |--> app.fabt_client.FabtClient (ABC)
 app/wallboard/router.py (SSE) -------+          |
-                                                 +-- HttpFabtClient  -> real FABT API (not built here)
+                                                 +-- HttpFabtClient  -> real FABT (github.com/mit37/finding-a-bed-tonight)
 app/nudge/scheduler.py (APScheduler) --+        +-- InMemoryFabtClient -> app/mock_fabt (default, this repo)
 
 BedBoard's own tables (app/db/models.py, via SQLAlchemy async):
@@ -44,6 +47,62 @@ architecture diagram) — everything upstream goes through `FabtClient`.
 Swapping `InMemoryFabtClient` for `HttpFabtClient` (already written, in
 [`app/fabt_client.py`](app/fabt_client.py)) is the entire integration
 surface for pointing this at a real FABT deployment.
+
+## FABT integration
+
+FABT was forked to
+[mit37/finding-a-bed-tonight](https://github.com/mit37/finding-a-bed-tonight)
+and `HttpFabtClient` was written against its **real** Spring controllers
+(not guessed) — auth, endpoint paths, request/response shapes, all read
+from source. It was then verified live: built the real backend JAR via a
+`maven:3.9-eclipse-temurin-25` container, ran it against a local Postgres
+with the project's own Flyway migrations + dev seed data, and exercised
+every `HttpFabtClient` method (`list_shelters`, `get_shelter`,
+`get_latest_counts`, `post_snapshot`, `count_active_holds`,
+`get_wallboard`) against the live API — all passing, DV shelter correctly
+excluded from every listing.
+
+Real things this surfaced that the PRD didn't call out:
+
+- **Auth is `X-API-Key`, not a Bearer JWT.** FABT has a distinct M2M
+  mechanism (`org.fabt.shared.security.ApiKeyAuthenticationFilter`) from
+  its user-login flow — a `COC_ADMIN`-scoped key created via
+  `POST /api/v1/api-keys` with `shelterId: null`. Tenant scope is derived
+  entirely from the key server-side; there's no tenant param anywhere.
+- **FABT wants `bedsTotal`/`bedsOccupied`, not "beds available."**
+  `PATCH /api/v1/shelters/{id}/availability` derives `bedsAvailable`
+  server-side. `HttpFabtClient.post_snapshot` bridges this by reading the
+  shelter's current `bedsTotal` and deriving `bedsOccupied` — see its
+  docstring in `app/fabt_client.py` for the full reasoning.
+- **Active holds reduce `bedsAvailable` below what you post.** FABT's
+  formula is `bedsTotal - bedsOccupied - bedsOnHold`, so if a bed is
+  currently held, the count that comes back is lower than the SMS
+  coordinator's reported number. `app/sms/webhook.py` was fixed to
+  confirm with FABT's *returned* value, not the raw SMS input, so a
+  coordinator is never told a number the wallboard will then contradict.
+- **API-key requests are rate-limited: 5/min per IP in dev,** documented
+  as configurable to 1000/min in production
+  (`fabt.api-key.rate-limit`/`FABT_API_KEY_RATE_LIMIT`) but not actually
+  set in any checked-in prod config. BedBoard's wallboard SSE (one
+  `get_wallboard` call per refresh tick, which fans out to 2 FABT calls
+  per shelter) and the nudge scheduler will both blow past the dev
+  default on any pilot with more than 1-2 shelters — **confirm the
+  production rate limit is actually raised before a real pilot**, and
+  consider whether BedBoard needs to cache/batch these calls regardless.
+- **The shelter-list endpoint doesn't include ADA/pets constraints** —
+  only the single-shelter detail endpoint does. `HttpFabtClient` defaults
+  `pets_ok`/`ada` to `False` from `list_shelters()` rather than doing an
+  N+1 detail fetch per shelter, since nothing in the sidecar currently
+  reads those two fields (search/filtering is FABT PWA's job).
+
+To run against it yourself: `git clone
+https://github.com/mit37/finding-a-bed-tonight.git`, build the backend
+(`mvn -DskipTests package` — needs Java 25 + Maven, or run that inside a
+`maven:3.9-eclipse-temurin-25` container), start Postgres + load
+`infra/scripts/seed-data.sql`, then set `BEDBOARD_USE_MOCK_FABT=false`,
+`BEDBOARD_FABT_API_KEY=fabt_demo_key_12345678901234567890123456789012`
+(the repo's own dev seed key) and `BEDBOARD_FABT_API_BASE_URL` in this
+project's `.env`.
 
 ## Run it (standalone, no setup beyond Python)
 
@@ -84,7 +143,7 @@ docker compose up --build
 ## Tests
 
 ```bash
-pytest        # 62 tests: parser, mock FABT, nudge scheduler, wallboard, full SMS-to-wallboard integration
+pytest        # 71 tests: parser, mock FABT, HttpFabtClient (real-shaped fixtures), nudge scheduler, wallboard, full SMS-to-wallboard integration
 ```
 
 ## Known gaps vs. the full PRD (read before a real pilot)
@@ -92,10 +151,14 @@ pytest        # 62 tests: parser, mock FABT, nudge scheduler, wallboard, full SM
 These are the real open items this slice deliberately left for the next
 phase, not bugs:
 
-- **FABT itself isn't forked yet.** `app/mock_fabt` is a hand-built stand-in
-  for FABT's actual REST API; `HttpFabtClient`'s endpoint paths are a
-  best guess at FABT's real OpenAPI contract and need reconciling once
-  FABT is actually deployed (per the PRD's discovery/build-vs-adopt plan).
+- **`HttpFabtClient` is reconciled and live-verified, but a per-shelter
+  SMS population map isn't.** Every shelter gets the same default mapping
+  (`app.fabt_client.DEFAULT_SMS_POPULATION_MAP`: women→`WOMEN_ONLY`,
+  men→`SINGLE_ADULT`, family→`FAMILY_WITH_CHILDREN`). A shelter with a
+  narrower population (e.g. veteran-only) would need a per-shelter
+  override table BedBoard doesn't have yet.
+- **The production API-key rate limit needs confirming before a pilot**
+  — see "FABT integration" above.
 - **Coordinator phone numbers are stored in plaintext** (`phone_e164`),
   not the PRD's `phone_hash` (HMAC lookup) + `phone_encrypted` pair. That
   needs a real KMS/HSM key and is deferred — see the comment in
@@ -125,11 +188,14 @@ phase, not bugs:
 
 ## Next steps toward the PRD's 6-weekend MVP
 
-1. Fork/deploy FABT's Lite tier (Spring Boot + React PWA + Postgres) per
-   the PRD, then reconcile `HttpFabtClient`'s assumed endpoints against
-   its real API.
-2. Swap `BEDBOARD_USE_MOCK_FABT=false` and point at it.
-3. Replace plaintext phone storage with hash+encrypt.
-4. Add Alembic, an admin UI for `coordinator_phone` (replacing
+1. ~~Fork/deploy FABT's Lite tier, reconcile `HttpFabtClient` against its
+   real API.~~ Done — see "FABT integration" above.
+2. Deploy FABT + this sidecar to a real (non-laptop) environment, create
+   a real `COC_ADMIN` API key for it, and confirm the production rate
+   limit is actually raised.
+3. Build the per-shelter SMS population map override (currently one
+   global default for every shelter).
+4. Replace plaintext phone storage with hash+encrypt.
+5. Add Alembic, an admin UI for `coordinator_phone` (replacing
    `scripts/seed_dev_coordinator.py`), and the HMIS nightly export bridge.
-5. Tabletop exercise with Here4You + 2 pilot shelters (PRD's pilot gate).
+6. Tabletop exercise with Here4You + 2 pilot shelters (PRD's pilot gate).

@@ -9,7 +9,15 @@ class Settings(BaseSettings):
 
     # --- FABT upstream API ---
     fabt_api_base_url: str = "http://localhost:8000"
-    fabt_service_account_token: str = "dev-service-account-token"
+    # Real FABT auth (reconciled against the actual API, see
+    # app/fabt_client.py): a COC_ADMIN-scoped API key sent as the
+    # `X-API-Key` header, created via `POST /api/v1/api-keys` with
+    # `shelterId: null` by a human FABT admin -- not a Bearer JWT.
+    fabt_api_key: str = "dev-api-key"
+    # FABT's real API derives tenant scope entirely from the API key
+    # server-side (no tenant_id in requests or responses) -- this is used
+    # only to label ShelterSummary.tenant_id locally, never sent to FABT.
+    fabt_tenant_id: str = "unknown-tenant"
 
     # --- Database (sidecar tables only) ---
     database_url: str = "sqlite+aiosqlite:///./bedboard.db"

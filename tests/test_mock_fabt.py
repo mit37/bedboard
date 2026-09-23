@@ -118,12 +118,15 @@ async def test_create_reservation_and_count_active_holds():
     assert await client.count_active_holds(shelter_id) == 1
 
 
-# --- HTTP surface (app/mock_fabt/server.py), proving HttpFabtClient's contract ---
+# --- HTTP surface (app/mock_fabt/server.py) -- BedBoard's own simplified
+# internal contract, not real FABT's wire format (see that module's
+# docstring). HttpFabtClient itself is tested against real-shaped
+# fixtures in tests/test_http_fabt_client.py.
 
 
 @pytest.fixture
 def auth_headers() -> dict[str, str]:
-    token = get_settings().fabt_service_account_token
+    token = get_settings().fabt_api_key
     return {"Authorization": f"Bearer {token}"}
 
 

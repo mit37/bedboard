@@ -52,7 +52,7 @@ def _build_fabt_client() -> FabtClient:
         )
         return InMemoryFabtClient(InMemoryFabtStore())
     settings = get_settings()
-    return HttpFabtClient(settings.fabt_api_base_url, settings.fabt_service_account_token)
+    return HttpFabtClient(settings.fabt_api_base_url, settings.fabt_api_key, settings.fabt_tenant_id)
 
 
 def _build_send_sms():

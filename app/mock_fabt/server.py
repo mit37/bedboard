@@ -1,17 +1,22 @@
-"""Standalone FastAPI app that mimics the upstream FABT REST API surface that
-HttpFabtClient (app/fabt_client.py) calls. Run it on its own with:
+"""Standalone FastAPI app exposing BedBoard's own simplified internal
+FABT-client contract (InMemoryFabtClient's methods, as plain REST) so the
+whole sidecar can run against *something* over real HTTP with zero setup.
+Run it on its own with:
 
     uvicorn app.mock_fabt.server:app --port 8000
 
-and point a real sidecar at it (BEDBOARD_FABT_API_BASE_URL=http://localhost:8000)
-with zero real FABT deployment. It's backed by the same
-InMemoryFabtStore/InMemoryFabtClient pair as the in-process mock -- this app
-is just an HTTP + bearer-token skin over it, which proves the HTTP contract
-HttpFabtClient assumes actually matches.
+Note: this does NOT mirror the real finding-a-bed-tonight API's actual wire
+format (nested shelter/constraints/capacities/availability objects,
+bedsTotal/bedsOccupied, `X-API-Key` auth, `/api/v1/...` paths -- see
+app.fabt_client.HttpFabtClient's docstring, which was reconciled against
+the real Spring controllers). This mock predates that reconciliation and
+intentionally stays simpler: it's a fake *simplified* upstream for local
+dev/testing of the rest of the sidecar, not a stand-in for real FABT's
+exact HTTP shape. HttpFabtClient is tested separately, against
+real-shaped fixtures, in tests/test_http_fabt_client.py.
 
-Every route requires `Authorization: Bearer <fabt_service_account_token>`
-(see app.config.Settings), returning 401 if it's missing or wrong -- the
-same scoped-service-account model the real FABT deployment uses.
+Every route requires `Authorization: Bearer <fabt_api_key>` (see
+app.config.Settings.fabt_api_key), returning 401 if missing/wrong.
 """
 
 from __future__ import annotations
@@ -26,7 +31,7 @@ from app.mock_fabt.client import InMemoryFabtClient
 from app.mock_fabt.store import InMemoryFabtStore
 from app.schemas import PopulationCount, Reservation, ShelterSummary, WallboardSnapshot
 
-app = FastAPI(title="Mock FABT API")
+app = FastAPI(title="Mock FABT API (BedBoard's simplified internal contract)")
 
 _store = InMemoryFabtStore()
 _client = InMemoryFabtClient(_store)
@@ -35,7 +40,7 @@ _client = InMemoryFabtClient(_store)
 async def require_service_account(request: Request) -> None:
     settings = get_settings()
     scheme, _, token = request.headers.get("Authorization", "").partition(" ")
-    if scheme.lower() != "bearer" or not token or token != settings.fabt_service_account_token:
+    if scheme.lower() != "bearer" or not token or token != settings.fabt_api_key:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
 
 

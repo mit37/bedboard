@@ -144,19 +144,29 @@ async def inbound_sms(
         await session.commit()
         return _twiml_response(render_help(locale))
 
+    actual_counts: dict = {}
     for bucket, count in parsed.counts.items():
         population_type = shelter.sms_population_map.get(bucket)
         if population_type is None:
             # This shelter doesn't track that bucket at all (e.g. Gateway
             # never reports "family") -- skip rather than invent a row.
             continue
-        await fabt.post_snapshot(
+        saved = await fabt.post_snapshot(
             shelter_id=shelter.id,
             population_type=population_type,
             beds_available=count,
             recorded_by=coordinator.user_id,
             recorded_at=now,
         )
+        # Always confirm with what FABT actually saved, not what the
+        # coordinator typed -- discovered live against the real FABT API
+        # (see HttpFabtClient.post_snapshot's docstring): if a population
+        # type has an active hold, FABT's returned beds_available is
+        # lower than the requested value (holds are subtracted
+        # server-side on top of occupancy). Echoing the raw input back
+        # would tell a coordinator a number that doesn't match what the
+        # wallboard/next search will actually show.
+        actual_counts[bucket] = saved.beds_available
 
     await resolve_nudges_for_shelter(session, shelter.id, now)
 
@@ -172,4 +182,4 @@ async def inbound_sms(
     )
     await session.commit()
 
-    return _twiml_response(render_confirmation(parsed.counts, locale))
+    return _twiml_response(render_confirmation(actual_counts, locale))

@@ -50,6 +50,10 @@ class ReservationStatus(str, Enum):
     CONFIRMED = "confirmed"
     CANCELLED = "cancelled"
     EXPIRED = "expired"
+    # Added after reconciling against the real FABT API (see
+    # app/fabt_client.py's HttpFabtClient docstring) -- FABT's own
+    # ReservationStatus enum has this extra terminal state.
+    CANCELLED_SHELTER_DEACTIVATED = "cancelled_shelter_deactivated"
 
 
 # --- FABT entities (subset of the upstream API the sidecar depends on) ---
