@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from app.config import get_settings
+from app.crypto import encrypt_phone, hash_phone
 from app.db.models import Base, CoordinatorPhoneModel, NudgeModel
 from app.fabt_client import FabtClient
 from app.freshness import compute_freshness
@@ -129,7 +130,8 @@ async def _add_coordinator(
         CoordinatorPhoneModel(
             user_id=f"user-{phone}",
             shelter_id=shelter_id,
-            phone_e164=phone,
+            phone_hash=hash_phone(phone),
+            phone_encrypted=encrypt_phone(phone),
             shift=shift,
             active=active,
             locale=locale,

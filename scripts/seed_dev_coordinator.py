@@ -17,6 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.crypto import encrypt_phone, hash_phone  # noqa: E402
 from app.db.models import CoordinatorPhoneModel  # noqa: E402
 from app.db.session import get_sessionmaker, init_db  # noqa: E402
 
@@ -37,7 +38,8 @@ async def main() -> None:
             CoordinatorPhoneModel(
                 user_id=args.user_id,
                 shelter_id=args.shelter_id,
-                phone_e164=args.phone_e164,
+                phone_hash=hash_phone(args.phone_e164),
+                phone_encrypted=encrypt_phone(args.phone_e164),
                 shift=args.shift,
                 active=True,
                 locale=args.locale,

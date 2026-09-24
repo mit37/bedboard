@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.crypto import encrypt_phone, hash_phone
 from app.db.models import (
     Base,
     CoordinatorPhoneModel,
@@ -50,7 +51,8 @@ async def seeded_session(engine_and_sessionmaker):
             CoordinatorPhoneModel(
                 user_id="user-1",
                 shelter_id=SHELTER_ID,
-                phone_e164="+14155551234",
+                phone_hash=hash_phone("+14155551234"),
+                phone_encrypted=encrypt_phone("+14155551234"),
                 shift="day",
                 active=True,
                 locale="en",

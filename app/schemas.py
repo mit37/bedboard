@@ -128,26 +128,13 @@ class SmsParseError(BaseModel):
 
 
 # --- BedBoard sidecar's own persisted entities (page 9 SQL, extended) ---
-
-
-class CoordinatorPhone(BaseModel):
-    user_id: str
-    shelter_id: str
-    phone_e164: str
-    shift: str | None = None  # 'day' | 'evening' | 'overnight'
-    active: bool = True
-    # Extension beyond the PRD's literal SQL: needed to pick SMS reply
-    # language and satisfy BB-10 (Spanish/Vietnamese) for the SMS channel.
-    locale: Locale = Locale.EN
-
-
-class SmsUpdateLogEntry(BaseModel):
-    phone_e164: str
-    shelter_id: str | None
-    raw_text: str
-    parsed: dict | None
-    result: str  # 'saved' | 'rejected' | 'parse_error'
-    ts: datetime
+#
+# Note: coordinator_phone and sms_update_log have no Pydantic mirror here
+# (unlike the FABT-facing entities above) -- they're read/written only via
+# their SQLAlchemy models directly (app.db.models), never serialized over
+# an API boundary, so a parallel schema would just be another place for
+# the phone_hash/phone_encrypted column shapes (see app.crypto) to drift
+# out of sync with reality.
 
 
 class NudgeLevel(int, Enum):

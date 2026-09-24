@@ -33,6 +33,7 @@ from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
 
 from app.config import get_settings
+from app.crypto import hash_phone
 from app.db.models import CoordinatorPhoneModel, SmsUpdateLogModel
 from app.db.session import get_session
 from app.fabt_client import FabtApiError, FabtClient
@@ -85,12 +86,13 @@ async def inbound_sms(
 
     now = datetime.now(timezone.utc)
     phone = From.strip()
+    phone_hash = hash_phone(phone)
     raw_text = Body or ""
 
     coordinator = (
         await session.execute(
             select(CoordinatorPhoneModel).where(
-                CoordinatorPhoneModel.phone_e164 == phone,
+                CoordinatorPhoneModel.phone_hash == phone_hash,
                 CoordinatorPhoneModel.active.is_(True),
             )
         )
@@ -99,7 +101,7 @@ async def inbound_sms(
     if coordinator is None:
         session.add(
             SmsUpdateLogModel(
-                phone_e164=phone,
+                phone_hash=phone_hash,
                 shelter_id=None,
                 raw_text=raw_text,
                 parsed=None,
@@ -120,7 +122,7 @@ async def inbound_sms(
     if isinstance(parsed, SmsParseError):
         session.add(
             SmsUpdateLogModel(
-                phone_e164=phone,
+                phone_hash=phone_hash,
                 shelter_id=coordinator.shelter_id,
                 raw_text=raw_text,
                 parsed=None,
@@ -135,7 +137,7 @@ async def inbound_sms(
     if shelter is None:
         session.add(
             SmsUpdateLogModel(
-                phone_e164=phone,
+                phone_hash=phone_hash,
                 shelter_id=coordinator.shelter_id,
                 raw_text=raw_text,
                 parsed={bucket.value: count for bucket, count in parsed.counts.items()},
@@ -191,7 +193,7 @@ async def inbound_sms(
         # nudge for data that never reached FABT.
         session.add(
             SmsUpdateLogModel(
-                phone_e164=phone,
+                phone_hash=phone_hash,
                 shelter_id=shelter.id,
                 raw_text=raw_text,
                 parsed={bucket.value: count for bucket, count in parsed.counts.items()},
@@ -206,7 +208,7 @@ async def inbound_sms(
 
     session.add(
         SmsUpdateLogModel(
-            phone_e164=phone,
+            phone_hash=phone_hash,
             shelter_id=shelter.id,
             raw_text=raw_text,
             parsed={bucket.value: count for bucket, count in parsed.counts.items()},

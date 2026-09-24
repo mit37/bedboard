@@ -181,10 +181,16 @@ phase, not bugs:
   `coordinator_phone`.
 - **The production API-key rate limit needs confirming before a pilot**
   — see "FABT integration" above.
-- **Coordinator phone numbers are stored in plaintext** (`phone_e164`),
-  not the PRD's `phone_hash` (HMAC lookup) + `phone_encrypted` pair. That
-  needs a real KMS/HSM key and is deferred — see the comment in
-  `app/db/models.py`.
+- **Coordinator phone numbers are hash+encrypted, but the key isn't
+  KMS-managed yet.** `coordinator_phone`/`sms_update_log` now store
+  `phone_hash` (HMAC-SHA256 lookup) and `phone_encrypted` (AES-256-GCM,
+  decrypted only to actually send a nudge SMS) instead of plaintext — see
+  [`app/crypto.py`](app/crypto.py). Both keys are HKDF-derived from one
+  operator secret, `BEDBOARD_PHONE_ENCRYPTION_KEY`; the app refuses to
+  boot with the checked-in dev default when `BEDBOARD_USE_MOCK_FABT=false`
+  (mirrors the same pattern the real FABT project uses for its own
+  dev-only secrets). Real KMS/HSM-backed key management and rotation is
+  still a real pilot's job, not this slice's.
 - **DV opacity is only "excluded from listings."** The PRD's full design
   (time-limited referral token + warm handoff call) isn't built — this
   slice only proves the *invariant* (a DV shelter never appears in
@@ -220,7 +226,9 @@ phase, not bugs:
    includes `prod`.
 4. Deploy FABT + this sidecar to a real (non-laptop) environment and
    create a real `COC_ADMIN` API key for it.
-5. Replace plaintext phone storage with hash+encrypt.
+5. ~~Replace plaintext phone storage with hash+encrypt.~~ Done — see
+   `app/crypto.py` and "Known gaps" above. Real KMS/HSM key management
+   is the remaining piece.
 6. Add Alembic, an admin UI for `coordinator_phone` and the SMS
    population-map overrides (replacing both CLI scripts), and the HMIS
    nightly export bridge.

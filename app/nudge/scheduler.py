@@ -44,6 +44,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import get_settings
+from app.crypto import decrypt_phone
 from app.db.models import CoordinatorPhoneModel, NudgeModel
 from app.fabt_client import FabtClient
 from app.nudge.messages import render_escalation, render_nudge
@@ -164,7 +165,7 @@ async def run_stale_check(
             body = render_nudge(
                 shelter.name, _locale_from_str(coordinator.locale), settings.stale_hours_threshold
             )
-            await send_sms(coordinator.phone_e164, body)
+            await send_sms(decrypt_phone(coordinator.phone_encrypted), body)
 
         created.append(
             NudgeRecord(
@@ -238,7 +239,7 @@ async def run_escalation_check(
             body = render_escalation(
                 shelter_name, _locale_from_str(lead.locale), settings.nudge_escalation_minutes
             )
-            await send_sms(lead.phone_e164, body)
+            await send_sms(decrypt_phone(lead.phone_encrypted), body)
 
         created.append(
             NudgeRecord(

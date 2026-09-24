@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.config import get_settings
+from app.config import DEV_PHONE_ENCRYPTION_KEY, get_settings
 from app.db.session import get_sessionmaker, init_db
 from app.fabt_client import FabtClient, HttpFabtClient
 from app.mock_fabt.client import InMemoryFabtClient
@@ -44,6 +44,26 @@ def _mask_phone(phone: str) -> str:
     if len(phone) <= 4:
         return "***"
     return phone[:2] + "*" * (len(phone) - 4) + phone[-2:]
+
+
+def _check_phone_encryption_key() -> None:
+    """Refuse to boot against a real deployment with the well-known,
+    checked-into-this-repo dev encryption key still active -- that would
+    mean every coordinator phone number is "encrypted" with a key anyone
+    can read in source control, equivalent to no encryption at all.
+    Mirrors the same real, working pattern the forked FABT platform uses
+    for its own dev-only secrets (MasterKekProvider/JwtService refusing
+    their dev-start.sh defaults under the `prod` Spring profile -- see
+    README's "FABT integration" section).
+    """
+    if USE_MOCK_FABT:
+        return
+    if get_settings().phone_encryption_key == DEV_PHONE_ENCRYPTION_KEY:
+        raise RuntimeError(
+            "BEDBOARD_PHONE_ENCRYPTION_KEY is still the checked-in dev default while "
+            "BEDBOARD_USE_MOCK_FABT=false. Generate a real one with `openssl rand -base64 32` "
+            "and set it before running against a real deployment."
+        )
 
 
 def _build_fabt_client() -> FabtClient:
@@ -92,6 +112,7 @@ async def lifespan(app: FastAPI):
     app.state.fabt_client = None
     app.state.scheduler = None
     try:
+        _check_phone_encryption_key()
         await init_db()
         app.state.fabt_client = _build_fabt_client()
         send_sms = _build_send_sms()

@@ -8,12 +8,13 @@ docstring for why).
 Deviations from the PRD's literal SQL, called out explicitly:
 - `locale` added to coordinator_phone (needed for BB-10 SMS replies in
   Spanish/Vietnamese; the PRD's SQL sketch predates that requirement).
-- `phone_e164` stored directly instead of `phone_hash` + `phone_encrypted`.
-  The PRD pairs an HMAC lookup hash with an encrypted-at-rest column so a
-  DB dump alone doesn't reveal phone numbers; that needs a real KMS/HSM
-  key, which is out of scope for this first slice running on SQLite in
-  dev. Swap in a proper hash+encrypt column pair before handling real
-  coordinator phone numbers -- see README "Known gaps".
+- `phone_hash`/`phone_encrypted` are as the PRD specifies (an HMAC lookup
+  hash paired with a separately encrypted column, see app/crypto.py for
+  both), but the encryption key is one operator-supplied application
+  secret (Settings.phone_encryption_key) rather than a real KMS/HSM --
+  swap in real KMS-backed key management before a production pilot
+  handles real coordinator phone numbers at real scale; see README
+  "Known gaps".
 """
 
 from __future__ import annotations
@@ -21,7 +22,17 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, SmallInteger, String, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    SmallInteger,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -39,7 +50,12 @@ class CoordinatorPhoneModel(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(String, nullable=False)
     shelter_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    phone_e164: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+    # HMAC-SHA256 of the E.164 number -- the lookup key (app.crypto.hash_phone).
+    phone_hash: Mapped[bytes] = mapped_column(LargeBinary, unique=True, nullable=False, index=True)
+    # AES-256-GCM ciphertext of the E.164 number (app.crypto.encrypt_phone)
+    # -- decrypted only when the real number is actually needed (sending a
+    # nudge SMS via Twilio); never used for lookup, since it's non-deterministic.
+    phone_encrypted: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     shift: Mapped[str | None] = mapped_column(String, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     locale: Mapped[str] = mapped_column(String, default="en", nullable=False)
@@ -49,7 +65,10 @@ class SmsUpdateLogModel(Base):
     __tablename__ = "sms_update_log"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    phone_e164: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    # Same HMAC-SHA256 lookup hash as coordinator_phone.phone_hash -- this
+    # log never needs to recover the real number, only to correlate
+    # entries by sender, so it stores no encrypted/plaintext number at all.
+    phone_hash: Mapped[bytes] = mapped_column(LargeBinary, nullable=False, index=True)
     shelter_id: Mapped[str | None] = mapped_column(String, nullable=True)
     raw_text: Mapped[str] = mapped_column(String, nullable=False)
     parsed: Mapped[dict | None] = mapped_column(JSON, nullable=True)

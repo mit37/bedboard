@@ -3,6 +3,11 @@ from zoneinfo import ZoneInfo
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Named so app.main's startup check can compare against it without
+# duplicating the literal string (and so it's easy to grep for everywhere
+# it's referenced).
+DEV_PHONE_ENCRYPTION_KEY = "dev-only-insecure-phone-key-do-not-use-in-production"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="BEDBOARD_", extra="ignore")
@@ -28,6 +33,17 @@ class Settings(BaseSettings):
 
     # --- Database (sidecar tables only) ---
     database_url: str = "sqlite+aiosqlite:///./bedboard.db"
+
+    # Master secret coordinator phone numbers are hashed/encrypted with
+    # (see app/crypto.py). One secret, not two: app/crypto.py derives
+    # separate HMAC and AES-256-GCM subkeys from it via HKDF, so there's
+    # only one value to generate and rotate. The default below is an
+    # obviously-fake dev value (matching the pattern the real FABT project
+    # uses for its own dev-only secrets) -- generate a real one with
+    # `openssl rand -base64 32` and never use this default outside
+    # BEDBOARD_USE_MOCK_FABT=true. app.main's startup check refuses to
+    # boot with this default when USE_MOCK_FABT is false.
+    phone_encryption_key: str = DEV_PHONE_ENCRYPTION_KEY
 
     # --- Twilio ---
     twilio_account_sid: str = "dev-account-sid"
