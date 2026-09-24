@@ -81,15 +81,23 @@ Real things this surfaced that the PRD didn't call out:
   coordinator's reported number. `app/sms/webhook.py` was fixed to
   confirm with FABT's *returned* value, not the raw SMS input, so a
   coordinator is never told a number the wallboard will then contradict.
-- **API-key requests are rate-limited: 5/min per IP in dev,** documented
-  as configurable to 1000/min in production
-  (`fabt.api-key.rate-limit`/`FABT_API_KEY_RATE_LIMIT`) but not actually
-  set in any checked-in prod config. BedBoard's wallboard SSE (one
-  `get_wallboard` call per refresh tick, which fans out to 2 FABT calls
-  per shelter) and the nudge scheduler will both blow past the dev
-  default on any pilot with more than 1-2 shelters — **confirm the
-  production rate limit is actually raised before a real pilot**, and
-  consider whether BedBoard needs to cache/batch these calls regardless.
+- **~~API-key rate limit~~ — confirmed and fixed upstream (2026-09-23).**
+  It genuinely wasn't raised anywhere: `application-prod.yml` never set
+  `fabt.api-key.rate-limit`, so any real deployment silently ran on
+  `ApiKeyAuthenticationFilter`'s own 5/min-per-IP code default, despite
+  `docs/FOR-DEVELOPERS.md` describing 1000/min as though it were already
+  the default. Confirmed live: booted the real backend with
+  `SPRING_PROFILES_ACTIVE=lite,prod` and got `X-RateLimit-Limit: 5`.
+  Filed and pushed the fix to the fork
+  ([commit 71806cc](https://github.com/mit37/finding-a-bed-tonight/commit/71806cc)):
+  `application-prod.yml` now sets `rate-limit: 1000`, and the same live
+  check afterward returned `X-RateLimit-Limit: 1000`. This only takes
+  effect when a real deployment actually activates the `prod` Spring
+  profile (worth double-checking at deploy time) — BedBoard's wallboard
+  SSE (one `get_wallboard` call per refresh tick, fanning out to 2 FABT
+  calls per shelter) and the nudge scheduler would still blow past the
+  5/min dev default on any pilot with more than 1-2 shelters if `prod`
+  isn't active.
 - **The shelter-list endpoint doesn't include ADA/pets constraints** —
   only the single-shelter detail endpoint does. `HttpFabtClient` defaults
   `pets_ok`/`ada` to `False` from `list_shelters()` rather than doing an
@@ -206,11 +214,14 @@ phase, not bugs:
    real API.~~ Done — see "FABT integration" above.
 2. ~~Build the per-shelter SMS population map override.~~ Done — see
    `app/sms_population_map.py` and `scripts/set_shelter_sms_population_map.py`.
-3. Deploy FABT + this sidecar to a real (non-laptop) environment, create
-   a real `COC_ADMIN` API key for it, and confirm the production rate
-   limit is actually raised.
-4. Replace plaintext phone storage with hash+encrypt.
-5. Add Alembic, an admin UI for `coordinator_phone` and the SMS
+3. ~~Confirm the production API-key rate limit is actually raised.~~ Done
+   — it wasn't; fixed upstream, see "Known gaps" above. Still worth
+   double-checking at real deploy time that `SPRING_PROFILES_ACTIVE`
+   includes `prod`.
+4. Deploy FABT + this sidecar to a real (non-laptop) environment and
+   create a real `COC_ADMIN` API key for it.
+5. Replace plaintext phone storage with hash+encrypt.
+6. Add Alembic, an admin UI for `coordinator_phone` and the SMS
    population-map overrides (replacing both CLI scripts), and the HMIS
    nightly export bridge.
-6. Tabletop exercise with Here4You + 2 pilot shelters (PRD's pilot gate).
+7. Tabletop exercise with Here4You + 2 pilot shelters (PRD's pilot gate).
