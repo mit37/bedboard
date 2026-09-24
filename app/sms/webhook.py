@@ -35,7 +35,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 from app.config import get_settings
 from app.db.models import CoordinatorPhoneModel, SmsUpdateLogModel
 from app.db.session import get_session
-from app.fabt_client import FabtClient
+from app.fabt_client import FabtApiError, FabtClient
 from app.nudge.scheduler import resolve_nudges_for_shelter
 from app.schemas import Locale, SmsParseError
 from app.sms_population_map import resolve_sms_population_map
@@ -158,13 +158,22 @@ async def inbound_sms(
             # ShelterSmsPopulationMapOverrideModel row -- either way, skip
             # rather than invent a row (see app.sms_population_map).
             continue
-        saved = await fabt.post_snapshot(
-            shelter_id=shelter.id,
-            population_type=population_type,
-            beds_available=count,
-            recorded_by=coordinator.user_id,
-            recorded_at=now,
-        )
+        try:
+            saved = await fabt.post_snapshot(
+                shelter_id=shelter.id,
+                population_type=population_type,
+                beds_available=count,
+                recorded_by=coordinator.user_id,
+                recorded_at=now,
+            )
+        except FabtApiError:
+            # FABT rejected this one bucket (e.g. no configured capacity
+            # for it). Don't let one bad bucket lose buckets that already
+            # succeeded earlier in this same loop, or crash the whole
+            # webhook to a bare 500 with no TwiML reply -- skip it and
+            # keep going; whatever's in actual_counts once the loop ends
+            # reflects exactly what was really saved.
+            continue
         # Always confirm with what FABT actually saved, not what the
         # coordinator typed -- discovered live against the real FABT API
         # (see HttpFabtClient.post_snapshot's docstring): if a population
@@ -174,6 +183,24 @@ async def inbound_sms(
         # would tell a coordinator a number that doesn't match what the
         # wallboard/next search will actually show.
         actual_counts[bucket] = saved.beds_available
+
+    if not actual_counts:
+        # Nothing was actually saved to FABT -- every bucket was either
+        # unsupported/disabled for this shelter, or every attempted post
+        # failed. Don't claim "saved" or clear a pending stale-count
+        # nudge for data that never reached FABT.
+        session.add(
+            SmsUpdateLogModel(
+                phone_e164=phone,
+                shelter_id=shelter.id,
+                raw_text=raw_text,
+                parsed={bucket.value: count for bucket, count in parsed.counts.items()},
+                result="rejected",
+                ts=now,
+            )
+        )
+        await session.commit()
+        return _twiml_response(render_help(locale))
 
     await resolve_nudges_for_shelter(session, shelter.id, now)
 

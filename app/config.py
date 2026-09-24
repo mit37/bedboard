@@ -7,6 +7,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="BEDBOARD_", extra="ignore")
 
+    # Flips the whole app between the standalone in-memory mock FABT
+    # (default) and a real FABT deployment. Read through Settings (not raw
+    # os.getenv) specifically so it's sourced from .env like every other
+    # setting -- a prior version read this via os.getenv() directly, which
+    # silently ignored .env and left real deployments stuck in mock mode.
+    use_mock_fabt: bool = True
+
     # --- FABT upstream API ---
     fabt_api_base_url: str = "http://localhost:8000"
     # Real FABT auth (reconciled against the actual API, see
@@ -26,7 +33,9 @@ class Settings(BaseSettings):
     twilio_account_sid: str = "dev-account-sid"
     twilio_auth_token: str = "dev-auth-token"
     twilio_from_number: str = "+10000000000"
-    # When true, inbound webhook signature validation is skipped (local dev/tests only).
+    # When true, inbound webhook signature validation is enforced. False
+    # (the default) skips it -- local dev/tests only; production should set
+    # this true (see .env.example).
     twilio_validate_signature: bool = False
 
     # --- Nudge scheduler ---

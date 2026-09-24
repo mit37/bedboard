@@ -179,6 +179,14 @@ def test_count_at_boundary_500_is_valid():
     _assert_parsed(result, {W: 500}, Locale.EN)
 
 
+def test_five_digit_count_is_rejected_not_silently_truncated():
+    # Regression: `\d{1,4}` alone would greedily match "0000" out of
+    # "00005" (a count of 0) and stop there instead of failing to match --
+    # silently reporting the wrong count instead of rejecting the message.
+    _assert_error(parse_sms("women 00005", Locale.EN), reason="unrecognized_format")
+    _assert_error(parse_sms("women 12345", Locale.EN), reason="unrecognized_format")
+
+
 def test_parse_sms_never_raises_on_weird_input():
     for junk in ["!!!", "12345", "womenwomenwomen", "W M F", "\t\n"]:
         result = parse_sms(junk, Locale.EN)

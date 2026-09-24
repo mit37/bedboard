@@ -294,10 +294,22 @@ class HttpFabtClient(FabtClient):
         )
 
     async def get_wallboard(self, tenant_id: str) -> WallboardSnapshot:
-        # tenant_id is accepted for interface parity with InMemoryFabtClient
-        # but ignored here -- the real API's tenant scope is fixed by which
-        # API key we authenticated with (see class docstring), not by a
-        # request parameter.
+        # The real API's tenant scope is fixed by which API key we
+        # authenticated with (see class docstring), not by this parameter
+        # -- there is nowhere to actually apply a different tenant_id.
+        # Rather than silently ignoring a caller-supplied tenant_id that
+        # doesn't match (which would return this client's real, full
+        # tenant data for what the caller thought was a different/empty
+        # tenant -- InMemoryFabtClient, by contrast, DOES filter by
+        # tenant_id, so this divergence was invisible in dev/tests and
+        # surprising in production), fail closed on a mismatch instead.
+        if tenant_id != self._tenant_id:
+            raise FabtApiError(
+                f"get_wallboard called with tenant_id={tenant_id!r}, but this client is "
+                f"scoped to tenant_id={self._tenant_id!r} (real FABT derives tenant scope "
+                "from the API key server-side, not from this parameter) -- refusing rather "
+                "than silently returning a different tenant's data."
+            )
         sites: list[WallboardSite] = []
         for shelter in await self.list_shelters():
             counts = await self.get_latest_counts(shelter.id)

@@ -46,7 +46,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import get_settings
 from app.db.models import CoordinatorPhoneModel, NudgeModel
 from app.fabt_client import FabtClient
-from app.freshness import compute_freshness
 from app.nudge.messages import render_escalation, render_nudge
 from app.schemas import Freshness, Locale, NudgeLevel, NudgeRecord, PopulationCount
 
@@ -65,11 +64,17 @@ def _locale_from_str(value: str | None) -> Locale:
     return Locale.EN
 
 
-def _any_stale(counts: list[PopulationCount], now: datetime, settings) -> bool:
-    return any(
-        compute_freshness(count.recorded_at, now, settings) == Freshness.STALE
-        for count in counts
-    )
+def _any_stale(counts: list[PopulationCount]) -> bool:
+    # Trust each FabtClient implementation's own PopulationCount.freshness
+    # rather than recomputing it here. Recomputing independently used to
+    # let the nudge scheduler disagree with the wallboard (which also just
+    # reads .freshness) about whether the same shelter is stale -- for
+    # HttpFabtClient, .freshness comes from FABT's own dataFreshness field,
+    # not BedBoard's local thresholds. Trusting the one authoritative
+    # source everyone else already trusts removes that divergence, and
+    # removes this module's only path that fed an externally-sourced,
+    # not-guaranteed-timezone-aware recorded_at into datetime arithmetic.
+    return any(count.freshness == Freshness.STALE for count in counts)
 
 
 def _elapsed(now: datetime, sent_at: datetime) -> timedelta:
@@ -138,7 +143,7 @@ async def run_stale_check(
             continue
 
         counts = await fabt.get_latest_counts(shelter.id)
-        if not _any_stale(counts, now, settings):
+        if not _any_stale(counts):
             continue
 
         if await _has_unresolved_nudge(session, shelter.id, NudgeLevel.COORDINATOR):
@@ -156,7 +161,9 @@ async def run_stale_check(
         )
 
         for coordinator in coordinators:
-            body = render_nudge(shelter.name, _locale_from_str(coordinator.locale))
+            body = render_nudge(
+                shelter.name, _locale_from_str(coordinator.locale), settings.stale_hours_threshold
+            )
             await send_sms(coordinator.phone_e164, body)
 
         created.append(
@@ -167,8 +174,13 @@ async def run_stale_check(
                 resolved_at=None,
             )
         )
+        # Commit per-shelter rather than once after the whole loop: if a
+        # LATER shelter's fabt call raises, this shelter's already-sent SMS
+        # and its NudgeModel row stay durable instead of being rolled back
+        # (which would otherwise make the next run treat this shelter as
+        # newly stale again and re-text the same coordinators).
+        await session.commit()
 
-    await session.commit()
     return created
 
 
@@ -200,8 +212,9 @@ async def run_escalation_check(
             continue
 
         counts = await fabt.get_latest_counts(nudge.shelter_id)
-        if not _any_stale(counts, now, settings):
+        if not _any_stale(counts):
             nudge.resolved_at = now
+            await session.commit()
             continue
 
         if await _has_unresolved_nudge(session, nudge.shelter_id, NudgeLevel.LEAD):
@@ -222,7 +235,9 @@ async def run_escalation_check(
         )
 
         for lead in leads:
-            body = render_escalation(shelter_name, _locale_from_str(lead.locale))
+            body = render_escalation(
+                shelter_name, _locale_from_str(lead.locale), settings.nudge_escalation_minutes
+            )
             await send_sms(lead.phone_e164, body)
 
         created.append(
@@ -233,8 +248,11 @@ async def run_escalation_check(
                 resolved_at=None,
             )
         )
+        # Per-nudge commit, same reasoning as run_stale_check: a later
+        # nudge's fabt call raising shouldn't roll back an escalation
+        # (and its already-sent lead SMS) that already happened this run.
+        await session.commit()
 
-    await session.commit()
     return created
 
 

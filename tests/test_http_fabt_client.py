@@ -231,6 +231,13 @@ async def test_get_wallboard_aggregates_non_dv_shelters(client_and_app):
 
 
 @pytest.mark.asyncio
+async def test_get_wallboard_rejects_mismatched_tenant_id(client_and_app):
+    client, _ = client_and_app
+    with pytest.raises(FabtApiError, match="dev-coc"):
+        await client.get_wallboard(tenant_id="some-other-tenant")
+
+
+@pytest.mark.asyncio
 async def test_wrong_api_key_raises_fabt_api_error():
     app = build_fake_fabt_app()
     client = HttpFabtClient(base_url="http://fake-fabt", api_key="wrong-key", tenant_id="dev-coc")

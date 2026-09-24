@@ -42,6 +42,7 @@ RuntimeError rather than an opaque AttributeError.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, Request
@@ -52,6 +53,7 @@ from app.fabt_client import FabtClient
 from app.schemas import WallboardSnapshot
 
 router = APIRouter(prefix="/wallboard", tags=["wallboard"])
+logger = logging.getLogger("bedboard")
 
 
 def get_fabt_client(request: Request) -> FabtClient:
@@ -87,17 +89,27 @@ async def _wallboard_event_stream(
     tenant_id: str,
 ) -> AsyncIterator[str]:
     interval = get_settings().wallboard_refresh_seconds
-    try:
-        while True:
-            if await request.is_disconnected():
-                break
+    while True:
+        if await request.is_disconnected():
+            break
+        try:
             snapshot = await fabt.get_wallboard(tenant_id)
+        except asyncio.CancelledError:
+            # Client went away mid-fetch; let the generator end quietly
+            # instead of leaking the loop or the sleeping task.
+            raise
+        except Exception:
+            # One transient failure (e.g. FabtApiError from a real FABT
+            # 5xx) shouldn't tear down every call-center screen currently
+            # streaming from this endpoint -- log it and just skip this
+            # tick; the next tick tries again.
+            logger.exception(
+                "wallboard SSE: fabt.get_wallboard failed for tenant_id=%s, skipping this tick",
+                tenant_id,
+            )
+        else:
             yield f"data: {snapshot.model_dump_json()}\n\n"
-            await asyncio.sleep(interval)
-    except asyncio.CancelledError:
-        # Client went away mid-sleep (or mid-fetch); let the generator end
-        # quietly instead of leaking the loop or the sleeping task.
-        raise
+        await asyncio.sleep(interval)
 
 
 @router.get("/{tenant_id}/stream")

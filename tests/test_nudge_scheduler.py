@@ -16,15 +16,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from app.config import get_settings
 from app.db.models import Base, CoordinatorPhoneModel, NudgeModel
 from app.fabt_client import FabtClient
+from app.freshness import compute_freshness
 from app.nudge.scheduler import (
     resolve_nudges_for_shelter,
     run_escalation_check,
     run_stale_check,
 )
 from app.schemas import (
-    Freshness,
     NudgeLevel,
     PopulationCount,
     Reservation,
@@ -97,13 +98,22 @@ def make_shelter(shelter_id: str = "shelter-1", name: str = "Riverside Shelter",
     return ShelterSummary(id=shelter_id, tenant_id="tenant-1", name=name, is_dv=is_dv)
 
 
-def make_count(recorded_at: datetime, population_type: str = "women_only", beds: int = 3) -> PopulationCount:
+def make_count(
+    recorded_at: datetime, now: datetime, population_type: str = "women_only", beds: int = 3
+) -> PopulationCount:
+    """Builds a PopulationCount with `.freshness` actually computed from
+    `recorded_at`/`now` (via the same compute_freshness real FabtClient
+    implementations use), rather than a hardcoded placeholder -- the
+    scheduler trusts `.freshness` directly (see app/nudge/scheduler.py's
+    _any_stale), so a fake client that doesn't compute it correctly would
+    silently test nothing.
+    """
     return PopulationCount(
         population_type=population_type,
         beds_available=beds,
         recorded_at=recorded_at,
         recorded_by="staff-1",
-        freshness=Freshness.FRESH,  # unused by the scheduler; it recomputes via compute_freshness
+        freshness=compute_freshness(recorded_at, now, get_settings()),
     )
 
 
@@ -149,7 +159,7 @@ async def session():
 @pytest.mark.asyncio
 async def test_fresh_count_produces_no_nudge(session: AsyncSession) -> None:
     fabt = FakeFabtClient([make_shelter()])
-    fabt.set_counts("shelter-1", [make_count(NOW - timedelta(hours=1))])
+    fabt.set_counts("shelter-1", [make_count(NOW - timedelta(hours=1), now=NOW)])
     send_sms = RecordingSendSms()
 
     created = await run_stale_check(NOW, fabt, session, send_sms)
@@ -166,7 +176,7 @@ async def test_fresh_count_produces_no_nudge(session: AsyncSession) -> None:
 @pytest.mark.asyncio
 async def test_stale_count_creates_one_nudge_and_texts_active_coordinators(session: AsyncSession) -> None:
     fabt = FakeFabtClient([make_shelter()])
-    fabt.set_counts("shelter-1", [make_count(NOW - timedelta(hours=9))])
+    fabt.set_counts("shelter-1", [make_count(NOW - timedelta(hours=9), now=NOW)])
     await _add_coordinator(session, "shelter-1", "+15551110001", shift="day")
     await _add_coordinator(session, "shelter-1", "+15551110002", shift="evening")
     await _add_coordinator(session, "shelter-1", "+15551110003", shift="day", active=False)
@@ -194,7 +204,7 @@ async def test_stale_count_creates_one_nudge_and_texts_active_coordinators(sessi
 @pytest.mark.asyncio
 async def test_repeated_stale_check_does_not_duplicate_pending_nudge(session: AsyncSession) -> None:
     fabt = FakeFabtClient([make_shelter()])
-    fabt.set_counts("shelter-1", [make_count(NOW - timedelta(hours=9))])
+    fabt.set_counts("shelter-1", [make_count(NOW - timedelta(hours=9), now=NOW)])
     await _add_coordinator(session, "shelter-1", "+15551110001")
     send_sms = RecordingSendSms()
 
@@ -215,7 +225,7 @@ async def test_repeated_stale_check_does_not_duplicate_pending_nudge(session: As
 @pytest.mark.asyncio
 async def test_escalation_does_nothing_before_window(session: AsyncSession) -> None:
     fabt = FakeFabtClient([make_shelter()])
-    fabt.set_counts("shelter-1", [make_count(NOW - timedelta(hours=9))])
+    fabt.set_counts("shelter-1", [make_count(NOW - timedelta(hours=9), now=NOW)])
     await _add_coordinator(session, "shelter-1", "+15551110001")
     send_sms = RecordingSendSms()
     await run_stale_check(NOW, fabt, session, send_sms)
@@ -235,7 +245,7 @@ async def test_escalation_does_nothing_before_window(session: AsyncSession) -> N
 @pytest.mark.asyncio
 async def test_escalation_after_window_pages_only_leads(session: AsyncSession) -> None:
     fabt = FakeFabtClient([make_shelter()])
-    fabt.set_counts("shelter-1", [make_count(NOW - timedelta(hours=9))])
+    fabt.set_counts("shelter-1", [make_count(NOW - timedelta(hours=9), now=NOW)])
     await _add_coordinator(session, "shelter-1", "+15551110001", shift="day")
     await _add_coordinator(session, "shelter-1", "+15551119999", shift="lead")
     send_sms = RecordingSendSms()
@@ -264,7 +274,7 @@ async def test_escalation_after_window_pages_only_leads(session: AsyncSession) -
 @pytest.mark.asyncio
 async def test_escalation_resolves_nudge_if_shelter_became_fresh(session: AsyncSession) -> None:
     fabt = FakeFabtClient([make_shelter()])
-    fabt.set_counts("shelter-1", [make_count(NOW - timedelta(hours=9))])
+    fabt.set_counts("shelter-1", [make_count(NOW - timedelta(hours=9), now=NOW)])
     await _add_coordinator(session, "shelter-1", "+15551110001")
     send_sms = RecordingSendSms()
     await run_stale_check(NOW, fabt, session, send_sms)
@@ -272,7 +282,7 @@ async def test_escalation_resolves_nudge_if_shelter_became_fresh(session: AsyncS
     later = NOW + timedelta(minutes=31)
     # A fresh count came in during the escalation window (e.g. the coordinator
     # texted an update) but resolve_nudges_for_shelter hasn't run yet.
-    fabt.set_counts("shelter-1", [make_count(later - timedelta(minutes=5))])
+    fabt.set_counts("shelter-1", [make_count(later - timedelta(minutes=5), now=later)])
 
     escalated = await run_escalation_check(later, fabt, session, send_sms)
 
@@ -289,7 +299,7 @@ async def test_escalation_resolves_nudge_if_shelter_became_fresh(session: AsyncS
 @pytest.mark.asyncio
 async def test_resolve_nudges_for_shelter_clears_unresolved_rows(session: AsyncSession) -> None:
     fabt = FakeFabtClient([make_shelter()])
-    fabt.set_counts("shelter-1", [make_count(NOW - timedelta(hours=9))])
+    fabt.set_counts("shelter-1", [make_count(NOW - timedelta(hours=9), now=NOW)])
     await _add_coordinator(session, "shelter-1", "+15551110001", shift="day")
     await _add_coordinator(session, "shelter-1", "+15551119999", shift="lead")
     send_sms = RecordingSendSms()

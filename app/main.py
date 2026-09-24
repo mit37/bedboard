@@ -9,13 +9,13 @@ file by default):
 
 Point it at a real FABT deployment and real Twilio by setting
 BEDBOARD_USE_MOCK_FABT=false plus BEDBOARD_FABT_API_BASE_URL /
-BEDBOARD_FABT_SERVICE_ACCOUNT_TOKEN / BEDBOARD_TWILIO_* (see .env.example).
+BEDBOARD_FABT_API_KEY / BEDBOARD_TWILIO_* (see .env.example).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -33,8 +33,11 @@ logger = logging.getLogger("bedboard")
 
 # Read once at import time (not per-request): flips the whole app between
 # "standalone demo against the in-memory mock FABT" (default) and "talking
-# to a real FABT deployment" without touching any other module.
-USE_MOCK_FABT = os.getenv("BEDBOARD_USE_MOCK_FABT", "true").lower() != "false"
+# to a real FABT deployment" without touching any other module. Sourced
+# from Settings (not os.getenv directly) so it picks up .env like every
+# other setting -- see Settings.use_mock_fabt's own comment for why that
+# distinction matters.
+USE_MOCK_FABT = get_settings().use_mock_fabt
 
 
 def _mask_phone(phone: str) -> str:
@@ -73,21 +76,30 @@ def _build_send_sms():
     twilio_client = TwilioClient(settings.twilio_account_sid, settings.twilio_auth_token)
 
     async def _send_sms(to: str, body: str) -> None:
-        twilio_client.messages.create(to=to, from_=settings.twilio_from_number, body=body)
+        # twilio's SDK is a synchronous/blocking HTTP client -- run it off
+        # the event loop so one Twilio round-trip doesn't stall every other
+        # coroutine (the wallboard SSE stream, concurrent inbound webhooks)
+        # for the duration of the call.
+        await asyncio.to_thread(
+            twilio_client.messages.create, to=to, from_=settings.twilio_from_number, body=body
+        )
 
     return _send_sms
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_db()
-    app.state.fabt_client = _build_fabt_client()
-    send_sms = _build_send_sms()
-    app.state.scheduler = start_scheduler(app.state.fabt_client, get_sessionmaker(), send_sms)
+    app.state.fabt_client = None
+    app.state.scheduler = None
     try:
+        await init_db()
+        app.state.fabt_client = _build_fabt_client()
+        send_sms = _build_send_sms()
+        app.state.scheduler = start_scheduler(app.state.fabt_client, get_sessionmaker(), send_sms)
         yield
     finally:
-        app.state.scheduler.shutdown(wait=False)
+        if app.state.scheduler is not None:
+            app.state.scheduler.shutdown(wait=False)
         if isinstance(app.state.fabt_client, HttpFabtClient):
             await app.state.fabt_client.aclose()
 

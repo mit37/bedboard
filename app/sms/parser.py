@@ -116,7 +116,12 @@ def _build_patterns(
             letters = "".join(re.escape(letter) for letter in tokens["letters"])
             letter_group = r"(?<![a-z])[" + letters + r"]"
         alts = [g for g in (word_group, letter_group) if g]
-        combined = "(?:" + "|".join(alts) + r")\s*(-?\d{1,4})"
+        # (?!\d) after the digit group: without it, `\d{1,4}` greedily
+        # matches only the first 1-4 digits of a LONGER run and stops,
+        # silently truncating e.g. "women 00005" to a "valid" count of 0
+        # instead of failing to match (and thus correctly being rejected
+        # as unrecognized/out-of-range) -- found live, see MAX_COUNT tests.
+        combined = "(?:" + "|".join(alts) + r")\s*(-?\d{1,4})(?!\d)"
         patterns[pop_type] = re.compile(combined, re.IGNORECASE)
     return patterns
 

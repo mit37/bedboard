@@ -22,6 +22,7 @@ from app.db.models import (
     ShelterSmsPopulationMapOverrideModel,
     SmsUpdateLogModel,
 )
+from app.fabt_client import FabtApiError
 from app.mock_fabt.client import InMemoryFabtClient
 from app.mock_fabt.store import InMemoryFabtStore
 from app.sms.webhook import router as sms_router
@@ -222,6 +223,61 @@ async def test_per_shelter_override_disables_a_bucket(app_and_store):
 
     resp = await _post_sms(app, "+14155551234", "family 9")
 
-    assert "family" not in resp.text.lower()
+    # Every bucket in the message was disabled for this shelter, so nothing
+    # was actually saved -- the reply must not claim success (no "Saved:").
+    assert "Saved" not in resp.text
     after = {c.population_type: c.beds_available for c in store.get_latest_counts(SHELTER_ID)}
     assert after["family"] == before["family"]  # untouched, not overwritten with 9
+
+    async with sessionmaker() as session:
+        rows = (await session.execute(select(SmsUpdateLogModel))).scalars().all()
+        assert rows[-1].result == "rejected"
+
+
+class _RaisingOnFamilyFabtClient(InMemoryFabtClient):
+    """Wraps InMemoryFabtClient but raises FabtApiError for one specific
+    population_type, so the webhook's per-bucket error handling can be
+    exercised without needing a full HttpFabtClient/real API."""
+
+    async def post_snapshot(self, shelter_id, population_type, beds_available, recorded_by, recorded_at=None):
+        if population_type == "family":
+            raise FabtApiError("simulated: no configured capacity for family")
+        return await super().post_snapshot(shelter_id, population_type, beds_available, recorded_by, recorded_at)
+
+
+@pytest.mark.asyncio
+async def test_post_snapshot_error_on_one_bucket_does_not_lose_others_or_crash(
+    engine_and_sessionmaker, seeded_session
+):
+    _, sessionmaker = engine_and_sessionmaker
+    store = InMemoryFabtStore(now=NOW)
+    client = _RaisingOnFamilyFabtClient(store)
+
+    app = FastAPI()
+    app.include_router(sms_router)
+    app.state.fabt_client = client
+
+    from app.sms import webhook as webhook_module
+
+    async def _override_get_session():
+        async with sessionmaker() as session:
+            yield session
+
+    app.dependency_overrides[webhook_module.get_session] = _override_get_session
+    app.dependency_overrides[get_fabt_client] = lambda: client
+
+    resp = await _post_sms(app, "+14155551234", "W 3 M 1 F 0")
+
+    # The webhook must not 500 (post_snapshot raised for "family"), and the
+    # buckets that DID succeed (women, men) must still be confirmed/saved.
+    assert resp.status_code == 200
+    assert "3 women" in resp.text
+    assert "1 men" in resp.text
+    assert "family" not in resp.text.lower()
+    counts = {c.population_type: c.beds_available for c in store.get_latest_counts(SHELTER_ID)}
+    assert counts["women_only"] == 3
+    assert counts["single_adult"] == 1
+
+    async with sessionmaker() as session:
+        rows = (await session.execute(select(SmsUpdateLogModel))).scalars().all()
+        assert rows[-1].result == "saved"

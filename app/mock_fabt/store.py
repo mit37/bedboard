@@ -210,11 +210,18 @@ class InMemoryFabtStore:
     # --- reservations ------------------------------------------------------
 
     def count_active_holds(self, shelter_id: str) -> int:
+        # HELD only, matching the real FABT API (confirmed live against a
+        # running instance -- GET /api/v1/shelters/{id}/reservations only
+        # ever returns currently-HELD reservations; see
+        # HttpFabtClient.count_active_holds). Previously also counted
+        # CONFIRMED, which the real API never does -- WallboardSite.active_holds
+        # would have silently meant different things depending on which
+        # FabtClient implementation was wired up the moment a
+        # reservation-confirmation flow existed.
         return sum(
             1
             for r in self._reservations.values()
-            if r.shelter_id == shelter_id
-            and r.status in (ReservationStatus.HELD, ReservationStatus.CONFIRMED)
+            if r.shelter_id == shelter_id and r.status == ReservationStatus.HELD
         )
 
     def create_reservation(

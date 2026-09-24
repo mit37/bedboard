@@ -197,6 +197,43 @@ async def test_stream_yields_well_formed_sse_event() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stream_skips_a_tick_on_transient_error_instead_of_dying(monkeypatch) -> None:
+    """A single fabt.get_wallboard() failure must not tear down the SSE
+    stream -- it should log, skip that tick, and yield normally on the
+    next one."""
+
+    class _FlakyFabtClient(FakeFabtClient):
+        def __init__(self, snapshot: WallboardSnapshot) -> None:
+            super().__init__(snapshot)
+            self.calls = 0
+
+        async def get_wallboard(self, tenant_id: str) -> WallboardSnapshot:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("simulated transient FABT failure")
+            return await super().get_wallboard(tenant_id)
+
+    class _FastSettings:
+        wallboard_refresh_seconds = 0
+
+    monkeypatch.setattr("app.wallboard.router.get_settings", lambda: _FastSettings())
+
+    fake_client = _FlakyFabtClient(_make_snapshot())
+    fake_request = _FakeRequest()
+
+    response = await stream_wallboard(TENANT_ID, fake_request, fabt=fake_client)
+    try:
+        first_chunk = await response.body_iterator.__anext__()
+    finally:
+        await response.body_iterator.aclose()
+
+    assert first_chunk.startswith("data: ")
+    # calls == 2: the first (failed) tick was skipped, not fatal -- the
+    # second tick is the one that actually got yielded.
+    assert fake_client.calls == 2
+
+
+@pytest.mark.asyncio
 async def test_dv_shelter_never_leaks_through_router() -> None:
     """The fake client's get_wallboard omits the DV shelter entirely (as a
     real FabtClient implementation is expected to). This asserts the router
