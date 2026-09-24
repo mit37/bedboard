@@ -21,7 +21,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, SmallInteger, String
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, SmallInteger, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -65,3 +65,30 @@ class NudgeModel(Base):
     level: Mapped[int] = mapped_column(SmallInteger, nullable=False)  # 1=coordinator, 2=lead
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ShelterSmsPopulationMapOverrideModel(Base):
+    """BedBoard's own per-shelter override of which FABT population_type
+    an SMS bucket (women/men/family) maps onto for that shelter. FABT has
+    no concept of this mapping -- see app/sms_population_map.py for why
+    it exists and how it's resolved (only app/sms/webhook.py reads it;
+    every FabtClient implementation still supplies its own default map
+    via ShelterSummary.sms_population_map, which this overrides).
+    """
+
+    __tablename__ = "shelter_sms_population_map_override"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    shelter_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    sms_population_type: Mapped[str] = mapped_column(String, nullable=False)  # women|men|family
+    # NULL = explicitly disable this bucket for this shelter (it will no
+    # longer accept SMS updates for it at all, even if the FabtClient's
+    # own default map would otherwise include it). A row's ABSENCE
+    # (no override at all for that bucket) instead means "fall back to
+    # whatever the shelter's own default map says" -- these are two
+    # different, both-legitimate outcomes, not interchangeable.
+    fabt_population_type: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("shelter_id", "sms_population_type", name="uq_shelter_sms_pop_override"),
+    )

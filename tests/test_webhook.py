@@ -15,7 +15,13 @@ from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.db.models import Base, CoordinatorPhoneModel, NudgeModel, SmsUpdateLogModel
+from app.db.models import (
+    Base,
+    CoordinatorPhoneModel,
+    NudgeModel,
+    ShelterSmsPopulationMapOverrideModel,
+    SmsUpdateLogModel,
+)
 from app.mock_fabt.client import InMemoryFabtClient
 from app.mock_fabt.store import InMemoryFabtStore
 from app.sms.webhook import router as sms_router
@@ -175,3 +181,47 @@ async def test_fresh_update_resolves_pending_nudge(app_and_store):
         ).scalars().all()
         assert len(nudges) == 1
         assert nudges[0].resolved_at is not None
+
+
+@pytest.mark.asyncio
+async def test_per_shelter_override_redirects_a_bucket(app_and_store):
+    app, store, sessionmaker = app_and_store
+
+    async with sessionmaker() as session:
+        session.add(
+            ShelterSmsPopulationMapOverrideModel(
+                shelter_id=SHELTER_ID, sms_population_type="men", fabt_population_type="veteran"
+            )
+        )
+        await session.commit()
+
+    resp = await _post_sms(app, "+14155551234", "men 5")
+
+    assert "5 men" in resp.text
+    counts = {c.population_type: c.beds_available for c in store.get_latest_counts(SHELTER_ID)}
+    assert counts["veteran"] == 5
+    # single_adult (the shelter's own default map for "men") must be
+    # untouched -- the override redirected the bucket, it didn't also
+    # write to the default target.
+    assert counts["single_adult"] == 2
+
+
+@pytest.mark.asyncio
+async def test_per_shelter_override_disables_a_bucket(app_and_store):
+    app, store, sessionmaker = app_and_store
+
+    async with sessionmaker() as session:
+        session.add(
+            ShelterSmsPopulationMapOverrideModel(
+                shelter_id=SHELTER_ID, sms_population_type="family", fabt_population_type=None
+            )
+        )
+        await session.commit()
+
+    before = {c.population_type: c.beds_available for c in store.get_latest_counts(SHELTER_ID)}
+
+    resp = await _post_sms(app, "+14155551234", "family 9")
+
+    assert "family" not in resp.text.lower()
+    after = {c.population_type: c.beds_available for c in store.get_latest_counts(SHELTER_ID)}
+    assert after["family"] == before["family"]  # untouched, not overwritten with 9

@@ -2,9 +2,10 @@
 
 Wires together app.sms.parser/messages, app.fabt_client.FabtClient (via the
 same app.state.fabt_client dependency the wallboard uses), app.db.models
-(CoordinatorPhoneModel, SmsUpdateLogModel), and
-app.nudge.scheduler.resolve_nudges_for_shelter so a fresh count clears any
-pending stale-count nudge for that shelter.
+(CoordinatorPhoneModel, SmsUpdateLogModel), app.sms_population_map (any
+per-shelter override of which FABT population_type an SMS bucket maps
+onto), and app.nudge.scheduler.resolve_nudges_for_shelter so a fresh count
+clears any pending stale-count nudge for that shelter.
 
 Integration decisions made here (not owned by any single module):
 - An inbound message from an unregistered phone number is rejected and
@@ -37,6 +38,7 @@ from app.db.session import get_session
 from app.fabt_client import FabtClient
 from app.nudge.scheduler import resolve_nudges_for_shelter
 from app.schemas import Locale, SmsParseError
+from app.sms_population_map import resolve_sms_population_map
 from app.sms.messages import render_confirmation, render_help, render_rejected_unknown_number
 from app.sms.parser import parse_sms
 from app.wallboard.router import get_fabt_client
@@ -144,12 +146,17 @@ async def inbound_sms(
         await session.commit()
         return _twiml_response(render_help(locale))
 
+    population_map = await resolve_sms_population_map(session, shelter)
+
     actual_counts: dict = {}
     for bucket, count in parsed.counts.items():
-        population_type = shelter.sms_population_map.get(bucket)
+        population_type = population_map.get(bucket)
         if population_type is None:
-            # This shelter doesn't track that bucket at all (e.g. Gateway
-            # never reports "family") -- skip rather than invent a row.
+            # Either this shelter's default map doesn't serve that bucket
+            # (e.g. Gateway never reports "family"), or a BedBoard admin
+            # explicitly disabled it via a
+            # ShelterSmsPopulationMapOverrideModel row -- either way, skip
+            # rather than invent a row (see app.sms_population_map).
             continue
         saved = await fabt.post_snapshot(
             shelter_id=shelter.id,

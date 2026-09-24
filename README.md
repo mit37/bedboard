@@ -24,6 +24,7 @@ mocked and what a real pilot still needs.
 | BB-7 | Here4You wallboard | [`app/wallboard/router.py`](app/wallboard/router.py) |
 | BB-8 | DV opaque referral (partial) | `is_dv` filtering in [`app/mock_fabt/store.py`](app/mock_fabt/store.py) — see gaps |
 | BB-10 | Spanish + Vietnamese | [`app/sms/messages.py`](app/sms/messages.py), [`app/nudge/messages.py`](app/nudge/messages.py) |
+| — | Per-shelter SMS population-map override | [`app/sms_population_map.py`](app/sms_population_map.py) |
 
 Not built in this slice: BB-1/3/4/9/11/12/13 and the FABT PWA itself all
 live in FABT (Java/Spring), which this build doesn't fork — see the PRD's
@@ -120,6 +121,16 @@ admin UI yet (out of scope for this slice), register a demo coordinator:
 python scripts/seed_dev_coordinator.py "+15551234567" shelter-first-street --shift day --locale en
 ```
 
+Optionally, override how a shelter's SMS buckets map onto FABT population
+types (also BedBoard's own table, same no-admin-UI-yet situation — see
+[`app/sms_population_map.py`](app/sms_population_map.py)):
+
+```bash
+python scripts/set_shelter_sms_population_map.py set shelter-gateway men VETERAN
+python scripts/set_shelter_sms_population_map.py disable shelter-gateway family
+python scripts/set_shelter_sms_population_map.py list shelter-gateway
+```
+
 Try it:
 
 ```bash
@@ -143,7 +154,7 @@ docker compose up --build
 ## Tests
 
 ```bash
-pytest        # 71 tests: parser, mock FABT, HttpFabtClient (real-shaped fixtures), nudge scheduler, wallboard, full SMS-to-wallboard integration
+pytest        # 79 tests: parser, mock FABT, HttpFabtClient (real-shaped fixtures), nudge scheduler, wallboard, SMS population-map overrides, full SMS-to-wallboard integration
 ```
 
 ## Known gaps vs. the full PRD (read before a real pilot)
@@ -151,12 +162,15 @@ pytest        # 71 tests: parser, mock FABT, HttpFabtClient (real-shaped fixture
 These are the real open items this slice deliberately left for the next
 phase, not bugs:
 
-- **`HttpFabtClient` is reconciled and live-verified, but a per-shelter
-  SMS population map isn't.** Every shelter gets the same default mapping
-  (`app.fabt_client.DEFAULT_SMS_POPULATION_MAP`: women→`WOMEN_ONLY`,
-  men→`SINGLE_ADULT`, family→`FAMILY_WITH_CHILDREN`). A shelter with a
-  narrower population (e.g. veteran-only) would need a per-shelter
-  override table BedBoard doesn't have yet.
+- **Per-shelter SMS population-map overrides exist but aren't
+  admin-UI-managed.** `app.fabt_client.DEFAULT_SMS_POPULATION_MAP`
+  (women→`WOMEN_ONLY`, men→`SINGLE_ADULT`, family→`FAMILY_WITH_CHILDREN`)
+  is still every shelter's starting point, but a BedBoard admin can now
+  redirect or disable any bucket per shelter (e.g. a veteran-only shelter
+  pointing "men" at `VETERAN`) via
+  `scripts/set_shelter_sms_population_map.py` — see [`app/sms_population_map.py`](app/sms_population_map.py).
+  Same "no admin UI yet, CLI script instead" situation as
+  `coordinator_phone`.
 - **The production API-key rate limit needs confirming before a pilot**
   — see "FABT integration" above.
 - **Coordinator phone numbers are stored in plaintext** (`phone_e164`),
@@ -175,10 +189,10 @@ phase, not bugs:
   (`BEDBOARD_WALLBOARD_REFRESH_SECONDS`) rather than pushing within 5s of
   a real change, which needs a pub/sub layer FABT doesn't have yet.
 - **No Alembic migrations** — `init_db()` just calls
-  `Base.metadata.create_all`. Fine for a pilot's 3 tables; add Alembic
+  `Base.metadata.create_all`. Fine for a pilot's 4 tables; add Alembic
   before schema changes get risky.
-- **No auth on the API itself** beyond the FABT service-account bearer
-  token pattern and Twilio signature validation (off by default locally,
+- **No auth on the API itself** beyond the FABT API-key pattern and
+  Twilio signature validation (off by default locally,
   on via `BEDBOARD_TWILIO_VALIDATE_SIGNATURE`). OIDC/county-SSO for admin
   routes isn't built (there are no admin routes yet either).
 - **SMS locale token choices are this build's own design**, not something
@@ -190,12 +204,13 @@ phase, not bugs:
 
 1. ~~Fork/deploy FABT's Lite tier, reconcile `HttpFabtClient` against its
    real API.~~ Done — see "FABT integration" above.
-2. Deploy FABT + this sidecar to a real (non-laptop) environment, create
+2. ~~Build the per-shelter SMS population map override.~~ Done — see
+   `app/sms_population_map.py` and `scripts/set_shelter_sms_population_map.py`.
+3. Deploy FABT + this sidecar to a real (non-laptop) environment, create
    a real `COC_ADMIN` API key for it, and confirm the production rate
    limit is actually raised.
-3. Build the per-shelter SMS population map override (currently one
-   global default for every shelter).
 4. Replace plaintext phone storage with hash+encrypt.
-5. Add Alembic, an admin UI for `coordinator_phone` (replacing
-   `scripts/seed_dev_coordinator.py`), and the HMIS nightly export bridge.
+5. Add Alembic, an admin UI for `coordinator_phone` and the SMS
+   population-map overrides (replacing both CLI scripts), and the HMIS
+   nightly export bridge.
 6. Tabletop exercise with Here4You + 2 pilot shelters (PRD's pilot gate).
