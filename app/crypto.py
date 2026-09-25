@@ -71,3 +71,11 @@ def decrypt_phone(blob: bytes) -> str:
     key = _derive_key(_ENCRYPT_KEY_INFO)
     nonce, ciphertext = blob[:_NONCE_LEN], blob[_NONCE_LEN:]
     return AESGCM(key).decrypt(nonce, ciphertext, None).decode("utf-8")
+
+
+def mask_phone(phone_e164: str) -> str:
+    """For display only (logs, the admin UI) -- never store this instead
+    of the real hash/ciphertext, it's lossy on purpose."""
+    if len(phone_e164) <= 4:
+        return "***"
+    return phone_e164[:2] + "*" * (len(phone_e164) - 4) + phone_e164[-2:]

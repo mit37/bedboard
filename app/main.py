@@ -20,7 +20,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.admin.router import router as admin_router
 from app.config import DEV_PHONE_ENCRYPTION_KEY, get_settings
+from app.crypto import mask_phone
 from app.db.session import get_sessionmaker, init_db
 from app.fabt_client import FabtClient, HttpFabtClient
 from app.mock_fabt.client import InMemoryFabtClient
@@ -38,12 +40,6 @@ logger = logging.getLogger("bedboard")
 # other setting -- see Settings.use_mock_fabt's own comment for why that
 # distinction matters.
 USE_MOCK_FABT = get_settings().use_mock_fabt
-
-
-def _mask_phone(phone: str) -> str:
-    if len(phone) <= 4:
-        return "***"
-    return phone[:2] + "*" * (len(phone) - 4) + phone[-2:]
 
 
 def _check_phone_encryption_key() -> None:
@@ -86,7 +82,7 @@ def _build_send_sms():
     if USE_MOCK_FABT:
 
         async def _send_sms(to: str, body: str) -> None:
-            logger.info("dev SMS suppressed (mock mode): to=%s len=%d", _mask_phone(to), len(body))
+            logger.info("dev SMS suppressed (mock mode): to=%s len=%d", mask_phone(to), len(body))
 
         return _send_sms
 
@@ -128,6 +124,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="BedBoard sidecar", lifespan=lifespan)
 app.include_router(sms_router)
 app.include_router(wallboard_router)
+app.include_router(admin_router)
 
 
 @app.get("/healthz")

@@ -25,6 +25,7 @@ mocked and what a real pilot still needs.
 | BB-8 | DV opaque referral (partial) | `is_dv` filtering in [`app/mock_fabt/store.py`](app/mock_fabt/store.py) — see gaps |
 | BB-10 | Spanish + Vietnamese | [`app/sms/messages.py`](app/sms/messages.py), [`app/nudge/messages.py`](app/nudge/messages.py) |
 | — | Per-shelter SMS population-map override | [`app/sms_population_map.py`](app/sms_population_map.py) |
+| — | Admin UI (coordinators, population-map overrides) | [`app/admin/router.py`](app/admin/router.py) |
 
 Not built in this slice: BB-1/3/4/9/11/12/13 and the FABT PWA itself all
 live in FABT (Java/Spring), which this build doesn't fork — see the PRD's
@@ -122,15 +123,16 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-Then, since `coordinator_phone` is BedBoard's own table and there's no
-admin UI yet (out of scope for this slice), register a demo coordinator:
+Then open **[localhost:8000/admin](http://localhost:8000/admin)** to
+register a coordinator and manage SMS population-map overrides — see
+"Admin UI" below. (The CLI scripts still work too, for scripting/CI:)
 
 ```bash
 python scripts/seed_dev_coordinator.py "+15551234567" shelter-first-street --shift day --locale en
 ```
 
 Optionally, override how a shelter's SMS buckets map onto FABT population
-types (also BedBoard's own table, same no-admin-UI-yet situation — see
+types (also BedBoard's own table — see
 [`app/sms_population_map.py`](app/sms_population_map.py)):
 
 ```bash
@@ -153,6 +155,21 @@ curl -X POST http://localhost:8000/sms/inbound \
 `list_shelters`/the wallboard always exclude, and that only shows up via a
 direct `get_shelter` lookup.)
 
+## Admin UI
+
+`/admin/coordinators` and `/admin/population-map` ([app/admin/router.py](app/admin/router.py))
+are simple server-rendered (Jinja2, no JS framework) pages to register/
+deactivate/delete coordinators and manage per-shelter SMS population-map
+overrides — the primary way to do both now, replacing the two CLI scripts
+above for day-to-day use. Shelter dropdowns are populated live from
+whichever `FabtClient` is wired up (mock or real).
+
+**Has no authentication** — exactly as unauthenticated as the rest of
+this app right now (see "Known gaps"), but unlike the read-only
+wallboard/webhook routes, it can create/change/delete data. Don't expose
+it on an untrusted network without a reverse-proxy auth layer in front of
+it.
+
 ## Run it with Docker (Postgres instead of SQLite)
 
 ```bash
@@ -162,7 +179,7 @@ docker compose up --build
 ## Tests
 
 ```bash
-pytest        # 79 tests: parser, mock FABT, HttpFabtClient (real-shaped fixtures), nudge scheduler, wallboard, SMS population-map overrides, full SMS-to-wallboard integration
+pytest        # 105 tests: parser, mock FABT, HttpFabtClient (real-shaped fixtures), nudge scheduler, wallboard, SMS population-map overrides, admin UI, crypto, full SMS-to-wallboard integration
 ```
 
 ## Known gaps vs. the full PRD (read before a real pilot)
@@ -170,15 +187,10 @@ pytest        # 79 tests: parser, mock FABT, HttpFabtClient (real-shaped fixture
 These are the real open items this slice deliberately left for the next
 phase, not bugs:
 
-- **Per-shelter SMS population-map overrides exist but aren't
-  admin-UI-managed.** `app.fabt_client.DEFAULT_SMS_POPULATION_MAP`
-  (women→`WOMEN_ONLY`, men→`SINGLE_ADULT`, family→`FAMILY_WITH_CHILDREN`)
-  is still every shelter's starting point, but a BedBoard admin can now
-  redirect or disable any bucket per shelter (e.g. a veteran-only shelter
-  pointing "men" at `VETERAN`) via
-  `scripts/set_shelter_sms_population_map.py` — see [`app/sms_population_map.py`](app/sms_population_map.py).
-  Same "no admin UI yet, CLI script instead" situation as
-  `coordinator_phone`.
+- **The admin UI (`/admin/...`) has no authentication.** Same no-auth
+  situation as the rest of the app (see the OIDC/SSO bullet below), but
+  this one can create/change/delete data, not just read it — see "Admin
+  UI" above before exposing it beyond localhost/a trusted network.
 - **The production API-key rate limit needs confirming before a pilot**
   — see "FABT integration" above.
 - **Coordinator phone numbers are hash+encrypted, but the key isn't
@@ -229,7 +241,7 @@ phase, not bugs:
 5. ~~Replace plaintext phone storage with hash+encrypt.~~ Done — see
    `app/crypto.py` and "Known gaps" above. Real KMS/HSM key management
    is the remaining piece.
-6. Add Alembic, an admin UI for `coordinator_phone` and the SMS
-   population-map overrides (replacing both CLI scripts), and the HMIS
-   nightly export bridge.
+6. ~~Add an admin UI for `coordinator_phone` and the SMS population-map
+   overrides.~~ Done — see "Admin UI" above (`app/admin/router.py`). No
+   auth on it yet; add Alembic and the HMIS nightly export bridge.
 7. Tabletop exercise with Here4You + 2 pilot shelters (PRD's pilot gate).

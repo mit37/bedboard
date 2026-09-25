@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}SMS population map — BedBoard admin{% endblock %}
+{% block content %}
+<h1>Per-shelter SMS population-map overrides</h1>
+<p class="muted">
+  Every shelter starts with the default mapping
+  ({% for bucket, pt in default_map.items() %}<code>{{ bucket }}</code>&rarr;<code>{{ pt }}</code>{{ ", " if not loop.last }}{% endfor %}).
+  Add an override below to redirect a bucket to a different FABT population type for one shelter, or disable a bucket entirely.
+  See <code>app/sms_population_map.py</code>.
+</p>
+
+<table>
+  <tr><th>Shelter</th><th>Bucket</th><th>Maps to</th><th></th></tr>
+  {% for o in overrides %}
+  <tr>
+    <td>{{ o.shelter_name }}</td>
+    <td>{{ o.sms_population_type }}</td>
+    <td>{% if o.fabt_population_type %}{{ o.fabt_population_type }}{% else %}<strong>DISABLED</strong>{% endif %}</td>
+    <td>
+      <form class="inline" method="post" action="/admin/population-map/{{ o.id }}/delete" onsubmit="return confirm('Remove this override? The shelter falls back to the default map for this bucket.');">
+        <button type="submit" class="danger">Remove override</button>
+      </form>
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4" class="muted">No overrides set — every shelter is using the default map.</td></tr>
+  {% endfor %}
+</table>
+
+<div class="card">
+  <h2>Add or replace an override</h2>
+  <form method="post" action="/admin/population-map">
+    <div class="row">
+      <div>
+        <label for="shelter_id">Shelter</label>
+        <select id="shelter_id" name="shelter_id" required>
+          {% for s in shelters %}
+          <option value="{{ s.id }}">{{ s.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="sms_population_type">Bucket</label>
+        <select id="sms_population_type" name="sms_population_type" required>
+          <option value="women">women</option>
+          <option value="men">men</option>
+          <option value="family">family</option>
+        </select>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="fabt_population_type">Maps to FABT population type</label>
+        <input id="fabt_population_type" name="fabt_population_type" placeholder="e.g. VETERAN (leave blank to disable this bucket)">
+      </div>
+    </div>
+    <button type="submit">Save override</button>
+  </form>
+</div>
+{% endblock %}

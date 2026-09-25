@@ -19,6 +19,7 @@ place that actually needs the effective map: app/sms/webhook.py.
 from __future__ import annotations
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ShelterSmsPopulationMapOverrideModel
@@ -64,3 +65,52 @@ async def resolve_sms_population_map(
         else:
             effective[bucket] = row.fabt_population_type
     return effective
+
+
+async def get_override_row(
+    session: AsyncSession, shelter_id: str, bucket: str
+) -> ShelterSmsPopulationMapOverrideModel | None:
+    return (
+        await session.execute(
+            select(ShelterSmsPopulationMapOverrideModel).where(
+                ShelterSmsPopulationMapOverrideModel.shelter_id == shelter_id,
+                ShelterSmsPopulationMapOverrideModel.sms_population_type == bucket,
+            )
+        )
+    ).scalar_one_or_none()
+
+
+async def upsert_override(
+    session: AsyncSession, shelter_id: str, bucket: str, fabt_population_type: str | None
+) -> None:
+    """Set the override row for (shelter_id, bucket) to fabt_population_type
+    (None = disabled). Shared by scripts/set_shelter_sms_population_map.py
+    and app/admin/router.py so both write paths agree on the same
+    tolerant-of-a-concurrent-insert upsert behavior.
+
+    The check-then-insert below is not atomic; two concurrent writers for
+    the same (shelter_id, bucket) can both see no existing row and both
+    try to insert one, tripping the table's UniqueConstraint on the
+    second commit. Retry once as an update against the row the other
+    writer just created, instead of raising a raw IntegrityError.
+    """
+    row = await get_override_row(session, shelter_id, bucket)
+    if row is not None:
+        row.fabt_population_type = fabt_population_type
+        await session.commit()
+        return
+
+    session.add(
+        ShelterSmsPopulationMapOverrideModel(
+            shelter_id=shelter_id, sms_population_type=bucket, fabt_population_type=fabt_population_type
+        )
+    )
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        row = await get_override_row(session, shelter_id, bucket)
+        if row is None:
+            raise
+        row.fabt_population_type = fabt_population_type
+        await session.commit()

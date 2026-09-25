@@ -39,69 +39,26 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import select  # noqa: E402
-from sqlalchemy.exc import IntegrityError  # noqa: E402
 
 from app.db.models import ShelterSmsPopulationMapOverrideModel  # noqa: E402
 from app.db.session import get_sessionmaker, init_db  # noqa: E402
+from app.sms_population_map import get_override_row, upsert_override  # noqa: E402
 
 BUCKETS = ["women", "men", "family"]
 
 
-async def _get_row(session, shelter_id: str, bucket: str) -> ShelterSmsPopulationMapOverrideModel | None:
-    return (
-        await session.execute(
-            select(ShelterSmsPopulationMapOverrideModel).where(
-                ShelterSmsPopulationMapOverrideModel.shelter_id == shelter_id,
-                ShelterSmsPopulationMapOverrideModel.sms_population_type == bucket,
-            )
-        )
-    ).scalar_one_or_none()
-
-
-async def _upsert(session, shelter_id: str, bucket: str, fabt_population_type: str | None) -> None:
-    """Set the override row for (shelter_id, bucket) to fabt_population_type
-    (None = disabled), tolerating a concurrent insert of the same row.
-
-    The check-then-insert below is not atomic; two concurrent runs for the
-    same (shelter_id, bucket) can both see no existing row and both try to
-    insert one, tripping the table's UniqueConstraint on the second
-    commit. Retry once as an update against the row the other run just
-    created, instead of crashing with a raw IntegrityError traceback.
-    """
-    row = await _get_row(session, shelter_id, bucket)
-    if row is not None:
-        row.fabt_population_type = fabt_population_type
-        await session.commit()
-        return
-
-    session.add(
-        ShelterSmsPopulationMapOverrideModel(
-            shelter_id=shelter_id, sms_population_type=bucket, fabt_population_type=fabt_population_type
-        )
-    )
-    try:
-        await session.commit()
-    except IntegrityError:
-        await session.rollback()
-        row = await _get_row(session, shelter_id, bucket)
-        if row is None:
-            raise
-        row.fabt_population_type = fabt_population_type
-        await session.commit()
-
-
 async def cmd_set(session, shelter_id: str, bucket: str, fabt_population_type: str) -> None:
-    await _upsert(session, shelter_id, bucket, fabt_population_type)
+    await upsert_override(session, shelter_id, bucket, fabt_population_type)
     print(f"{shelter_id}: SMS bucket {bucket!r} now maps to FABT population type {fabt_population_type!r}.")
 
 
 async def cmd_disable(session, shelter_id: str, bucket: str) -> None:
-    await _upsert(session, shelter_id, bucket, None)
+    await upsert_override(session, shelter_id, bucket, None)
     print(f"{shelter_id}: SMS bucket {bucket!r} disabled -- SMS updates to it will be ignored.")
 
 
 async def cmd_clear(session, shelter_id: str, bucket: str) -> None:
-    row = await _get_row(session, shelter_id, bucket)
+    row = await get_override_row(session, shelter_id, bucket)
     if row is None:
         print(f"{shelter_id}: no override for bucket {bucket!r} -- nothing to clear.")
         return

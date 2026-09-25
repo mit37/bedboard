@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Coordinators — BedBoard admin{% endblock %}
+{% block content %}
+<h1>Shelter coordinators</h1>
+<p class="muted">Phone numbers are stored hash+encrypted (app/crypto.py) and shown here masked; the full number is only decrypted server-side when sending a nudge SMS.</p>
+
+<table>
+  <tr><th>Shelter</th><th>User ID</th><th>Phone</th><th>Shift</th><th>Locale</th><th>Status</th><th></th></tr>
+  {% for c in coordinators %}
+  <tr class="{{ 'inactive' if not c.active }}">
+    <td>{{ c.shelter_name }}</td>
+    <td>{{ c.user_id }}</td>
+    <td>{{ c.masked_phone }}</td>
+    <td>{{ c.shift or '—' }}</td>
+    <td>{{ c.locale }}</td>
+    <td>{{ 'active' if c.active else 'inactive' }}</td>
+    <td>
+      <form class="inline" method="post" action="/admin/coordinators/{{ c.id }}/toggle-active">
+        <button type="submit" class="secondary">{{ 'Deactivate' if c.active else 'Reactivate' }}</button>
+      </form>
+      <form class="inline" method="post" action="/admin/coordinators/{{ c.id }}/delete" onsubmit="return confirm('Delete this coordinator?');">
+        <button type="submit" class="danger">Delete</button>
+      </form>
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="7" class="muted">No coordinators registered yet.</td></tr>
+  {% endfor %}
+</table>
+
+<div class="card">
+  <h2>Register a coordinator</h2>
+  <form method="post" action="/admin/coordinators">
+    <div class="row">
+      <div>
+        <label for="shelter_id">Shelter</label>
+        <select id="shelter_id" name="shelter_id" required>
+          {% for s in shelters %}
+          <option value="{{ s.id }}">{{ s.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="user_id">User ID</label>
+        <input id="user_id" name="user_id" placeholder="e.g. FABT user id or name" required>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="phone_e164">Phone (E.164)</label>
+        <input id="phone_e164" name="phone_e164" placeholder="+15551234567" pattern="^\+[1-9]\d{6,14}$" required>
+      </div>
+      <div>
+        <label for="shift">Shift</label>
+        <select id="shift" name="shift">
+          <option value="day">day</option>
+          <option value="evening">evening</option>
+          <option value="overnight">overnight</option>
+          <option value="lead">lead (gets BB-6 escalations)</option>
+        </select>
+      </div>
+      <div>
+        <label for="locale">Locale</label>
+        <select id="locale" name="locale">
+          <option value="en">English</option>
+          <option value="es">Español</option>
+          <option value="vi">Tiếng Việt</option>
+        </select>
+      </div>
+    </div>
+    <button type="submit">Register</button>
+  </form>
+</div>
+{% endblock %}
